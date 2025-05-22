@@ -1,7 +1,7 @@
 from pandas import options, Series, set_option, read_csv, errors, DataFrame, to_datetime, Grouper, to_numeric, Timestamp
 from warnings import simplefilter, filterwarnings, catch_warnings
 simplefilter(action = "ignore", category = errors.PerformanceWarning)
-from numpy import nanmedian, delete, maximum, isin, concatenate, cumprod, count_nonzero, unique, dot, corrcoef, log, arange, isnan, nanmax, nanmin, NaN, zeros, clip, where, float32, isfinite, array, append, NINF, intersect1d, setdiff1d, union1d
+from numpy import nanmedian, delete, std, isin, concatenate, cumprod, count_nonzero, unique, dot, corrcoef, log, arange, isnan, nanmax, nanmin, NaN, zeros, clip, where, float32, isfinite, array, append, NINF, intersect1d, setdiff1d, union1d
 from numpy import nonzero as npnz
 from math import ceil
 from time import time
@@ -308,15 +308,15 @@ def objective(trial):
     print('Trial:', trial.number)
     long_actor = trial.suggest_categorical("long_actor", func_lt)
     short_actor = trial.suggest_categorical("short_actor", func_lt)
-    long_critic = trial.suggest_categorical("long_critic", func_lt)
-    short_critic = trial.suggest_categorical("short_critic", func_lt)
+    #long_critic = trial.suggest_categorical("long_critic", func_lt)
+    #short_critic = trial.suggest_categorical("short_critic", func_lt)
     trader_wt_decay = 1 / 10 ** 3
     hidden_size = 2 ** 8
     total_epochs = 36
     stk_cnt_lt = [10, 16, 20, 25, 32, 40, 50]
     stk_cnt = trial.suggest_categorical("stk_cnt", stk_cnt_lt)
-    stk_ratio = trial.suggest_int('stk_ratio', 80, 100, step = 5) / 100
-    long_pct = 0.55
+    stk_ratio = 0.9
+    long_pct = 0.6
     long_cnt = ceil(stk_cnt * long_pct)
     short_cnt = stk_cnt - long_cnt
     stk_pct = stk_ratio / stk_cnt
@@ -324,12 +324,8 @@ def objective(trial):
     batch_mom = 0.9
     long_trader_lr = 0.002
     short_trader_lr = 0.002
-    #sector_dim = trial.suggest_int("sector_dim", 4, 8, step = 1)
-    #sector_dim = 7
-    #month_dim = trial.suggest_int("month_dim", 4, 8, step = 1)
-    #month_dim = 7
-    #weekday_dim = 3
-    hold_period = trial.suggest_int('hold_period', 1, 4, step = 1)
+    #hold_period = trial.suggest_int('hold_period', 1, 4, step = 1)
+    hold_period = 4
     update_cnt = 6
     model_type = trial.suggest_categorical("model_type", ['gbdt', 'dart', 'rf', 'upper', 'lower'])
     atr_ma = trial.suggest_int("atr_ma", 10, 30, step = 5)
@@ -339,8 +335,12 @@ def objective(trial):
     shortgain_N = trial.suggest_int("short_gain_N", 20, 40, step = 5) / 10
     strict_long = trial.suggest_categorical("strict_long", [True, False])
     strict_short = trial.suggest_categorical("strict_short", [True, False])
-    long_min_days = trial.suggest_int("long_min_days", 0, 100, step = 5)
-    short_min_days = trial.suggest_int("short_min_days", 0, 60, step = 5)
+    long_min_days = trial.suggest_int("long_min_days", 20, 100, step = 5)
+    short_min_days = trial.suggest_int("short_min_days", 0, 20, step = 5)
+    long_up_ret = trial.suggest_int("long_up_ret", 10, 70, step = 20) / 100
+    short_up_ret = trial.suggest_int("short_up_ret", 10, 70, step = 20) / 100
+    long_low_ret = trial.suggest_int("long_low_ret", -50, 50, step = 20) / 100
+    short_low_ret = trial.suggest_int("short_low_ret", -50, 50, step = 20) / 100
     long_lgbm = model_dict['long'][model_type]
     short_lgbm = model_dict['short'][model_type]
     long_upper = model_dict['long']['upper']
@@ -350,8 +350,8 @@ def objective(trial):
     long_eps = 1 / 10 ** 8
     short_eps = 1 / 10 ** 8
     #hidden_size: int, batch_mom: float, actor_act: nn, critic_act: nn, sector_dim: int, weekday_dim: int, month_dim: int
-    long_model = Trader(hidden_size, batch_mom, actor_act = getattr(nn, long_actor), critic_act = getattr(nn, long_critic))
-    short_model = Trader(hidden_size, batch_mom, actor_act = getattr(nn, short_actor), critic_act = getattr(nn, short_critic))
+    long_model = Trader(hidden_size, batch_mom, actor_act = getattr(nn, long_actor))
+    short_model = Trader(hidden_size, batch_mom, actor_act = getattr(nn, short_actor))
     long_opt = Adamax(long_model.parameters(),
     lr = long_trader_lr, eps = long_eps, weight_decay = trader_wt_decay, maximize = False, foreach = True)
     short_opt = Adamax(short_model.parameters(),
@@ -360,12 +360,12 @@ def objective(trial):
                    'long':{'gain': longgain_N, 'loss': longloss_N,
                     'strict': strict_long, 'days': long_min_days,
                     'cnt': long_cnt, 'lgbm': long_lgbm,
-                    'upper': long_upper, 'lower': long_lower,
+                    'upper': long_upper, 'lower': long_lower, 'up_ret': long_up_ret, 'low_ret': long_low_ret,
                     'model': long_model, 'opt': long_opt},
                     'short': {'gain': shortgain_N, 'loss': shortloss_N,
                     'strict': strict_short, 'days': short_min_days,
                     'cnt': short_cnt, 'lgbm': short_lgbm,
-                    'upper': short_upper, 'lower': short_lower,
+                    'upper': short_upper, 'lower': short_lower, 'up_ret': short_up_ret, 'low_ret': short_low_ret,
                     'model': short_model, 'opt': short_opt}}
 
     return process(total_epochs, hold_period, update_cnt, stk_pct, params_dict)
@@ -380,6 +380,8 @@ def test_model(stk_pct, params_dict):
     shortgain_N, shortloss_N = params_dict['short']['gain'], params_dict['short']['loss']
     strict_long, strict_short = params_dict['long']['strict'], params_dict['short']['strict']
     long_min_days, short_min_days = params_dict['long']['days'], params_dict['short']['days']
+    long_up_ret, short_up_ret = params_dict['long']['up_ret'], params_dict['short']['up_ret']
+    long_low_ret, short_low_ret = params_dict['long']['low_ret'], params_dict['short']['low_ret']
     wts_df = prices_df.copy(deep = True)
     wts_df.loc[:, assets] = 0
     wts_np = zeros((row_cnt, assets_cnt))
@@ -416,8 +418,8 @@ def test_model(stk_pct, params_dict):
                     select_params['short']['new_cnt'] = new_short_cnt
                     select_params['df'] = final_df
                     new_long_indices, new_short_indices = selection(select_params)
-                    LongSys = TradeSystem(new_long_indices, 'long', 'None', 0, stk_pct, longloss_N, longgain_N, 1, long_upper, long_lower, strict_long, long_min_days)
-                    ShortSys = TradeSystem(new_short_indices, 'short', 'None', 0, -stk_pct, shortloss_N, shortgain_N, 1, short_upper, short_lower, strict_short, short_min_days)
+                    LongSys = TradeSystem(new_long_indices, 'long', 'None', 0, stk_pct, longloss_N, longgain_N, 1, long_upper, long_lower, strict_long, long_min_days, long_up_ret, long_low_ret)
+                    ShortSys = TradeSystem(new_short_indices, 'short', 'None', 0, -stk_pct, shortloss_N, shortgain_N, 1, short_upper, short_lower, strict_short, short_min_days, short_up_ret, short_low_ret)
                     #initial_stks, trade_type, add_type, max_add_cnt, stk_pct, loss_N, gain_N, add_N, rf_upper, rf_lower, strict, min_days
                     LongSys.hold_np[:, 0] = prices_np[chg_date_idx, new_long_indices]
                     ShortSys.hold_np[:, 0] = prices_np[chg_date_idx, new_short_indices]
@@ -607,7 +609,7 @@ class BestTrial():
         self.train_time_lt = []
         self.stat_time_lt = []
 class TradeSystem():
-    def __init__(self, initial_indices, trade_type, add_type, max_add_cnt, stk_pct, loss_N, gain_N, add_N, rf_upper, rf_lower, strict, min_days):
+    def __init__(self, initial_indices, trade_type, add_type, max_add_cnt, stk_pct, loss_N, gain_N, add_N, rf_upper, rf_lower, strict, min_days, up_ret, low_ret):
         self.max_add_cnt = max_add_cnt
         self.stk_pct = stk_pct
         self.loss_N = loss_N
@@ -624,6 +626,8 @@ class TradeSystem():
         self.rf_upper = rf_upper
         self.rf_lower = rf_lower
         self.min_days = min_days
+        self.up_ret = up_ret
+        self.low_ret = low_ret
         self.hold_df = DataFrame(0.00, columns = ['cost', 'last_pr', 'atr', 'N', 'add_cnt', 'days', 'index'], index = arange(len(initial_indices)), dtype = 'float64')
         #cost: 0, last_pr:1, atr: 2, N: 3, add_cnt: 4, days: 5, index: 6
         self.hold_df['index'] = initial_indices
@@ -688,31 +692,21 @@ class TradeSystem():
         pred_upper = self.rf_upper.predict(stk_df)
         pred_lower = self.rf_lower.predict(stk_df)
         all_stks = stk_df.index
-        pos_stks = where(pred_upper > 0)[0]
-        if len(pos_stks) > 0:
-            sel_stks01 = intersect1d(pos_stks, where(pred_lower > 0)[0], assume_unique = True)
-            sel_stks02 = where(pred_upper > -pred_lower)[0]
-            return setdiff1d(all_stks, all_stks[union1d(sel_stks01, sel_stks02)])
-        else:
-            return all_stks
+        sel_stk_indices = intersect1d(where(pred_upper >= self.up_ret)[0], where(pred_lower >= self.low_ret)[0], assume_unique = True)
+        return setdiff1d(all_stks, all_stks[sel_stk_indices], assume_unique = True)#回傳要平倉的股票名稱
+
     def strict_same_direction_pred(self, stk_df):
         pred_upper = self.rf_upper.predict(stk_df)
         pred_lower = self.rf_lower.predict(stk_df)
         all_stks = stk_df.index
-        pos_indices = where(pred_upper > 0)[0]
-        min_cond = self.hold_np[:, 5] >= self.min_days
-        cand_names = assets[self.hold_np[npnz(min_cond)[0], 6].astype('int16')]
-        pos_names = all_stks[pos_indices]
-        strict_names = intersect1d(pos_names, cand_names, assume_unique = True)
-        if len(strict_names) > 0:
-            sel_names01 = intersect1d(strict_names, all_stks[where(pred_lower > 0)[0]], assume_unique = True)
-            sel_names02 = all_stks[where(pred_upper > -pred_lower)[0]]
-            return setdiff1d(all_stks, union1d(sel_names01, sel_names02))
-        else:
-            return []
+        sel_stk_indices = intersect1d(where(pred_upper >= self.up_ret)[0], where(pred_lower >= self.low_ret)[0], assume_unique = True)
+        cand_names01 = all_stks[sel_stk_indices]
+        min_cond = self.hold_np[:, 5] < self.min_days#持有天數小於最低標準的股票要繼續持有
+        cand_names02 = assets[self.hold_np[npnz(min_cond)[0], 6].astype('int16')]
+        return setdiff1d(all_stks, union1d(cand_names01, cand_names02), assume_unique = True)#回傳要平倉的股票名稱
 
 class Trader(nn.Module):
-    def __init__(self, hidden_size: int, batch_mom: float, actor_act: nn, critic_act: nn):
+    def __init__(self, hidden_size: int, batch_mom: float, actor_act: nn):
         super(Trader, self).__init__()
         self.emb_sector = nn.Embedding(9, 7)
         self.emb_month = nn.Embedding(12, 7)
@@ -721,7 +715,7 @@ class Trader(nn.Module):
         self.actor_act2 = actor_act()
         self.actor_l3 = nn.Linear(hidden_size, 1)
         self.critic_l1 = nn.Linear(1, 4)
-        self.critic_act2 = critic_act()
+        self.critic_act2 = nn.Mish()
         self.critic_l3 = nn.Linear(4, 1)
         self.critic_tanh4 = nn.Tanh()
         for layer in (self.actor_l1, self.actor_l3, self.critic_l1, self.critic_l3):
@@ -1019,7 +1013,7 @@ if __name__ == '__main__':
     dbx_encoder_fname = f'/sector_encoder.joblib'
     local_encoder_fname = f'{folder}{dbx_encoder_fname}'
 
-    def train(model, opt, trade_type: int, hold_period: int, update_cnt: int, return_dict: dict):
+    def train(model, opt, trade_type: int, hold_period: int, update_cnt: int, stk_cnt: int, return_dict: dict):
         #long_model, long_opt, 1, hold_period, update_cnt, return_dict
         set_num_threads(1)
         set_num_interop_threads(1)
@@ -1035,7 +1029,7 @@ if __name__ == '__main__':
                 ini_wt_dict[name] = param.data.clone()
         """
         true_train_dates = iter(train_dates[::hold_period])
-        train_cnt, select_cnt = 0, 5
+        train_cnt = 0
         train_time_lt, stat_time_lt = [], []
         #tmp_wts = zeros((row_cnt, assets_cnt))
         for fst_date in true_train_dates:
@@ -1050,7 +1044,7 @@ if __name__ == '__main__':
             policy, predval = model(stk_data, liq_tensor)
             if type(policy) != int:
                 logits = policy.view(-1)
-                sel_indices = topk(logits, k = select_cnt, largest = True, sorted = False)[1].numpy()
+                sel_indices = topk(logits, k = stk_cnt, largest = True, sorted = False)[1].numpy()
                 prob = logits[sel_indices].sum()
                 #tmp_wts[start_idx, sel_indices] = trade_type / select_cnt
             else:
@@ -1066,9 +1060,10 @@ if __name__ == '__main__':
             daily_ratio = 1 + daily_pct
             daily_val = cumprod(daily_ratio, axis = 0)
             daily_val[isnan(daily_val)] = 1
-            max_val = maximum.accumulate(daily_val, axis = 0)
-            mdd_val = (daily_val / max_val - 1).min(axis = 0)
-            rew = nanmedian(daily_val[-1, :] - 1 + mdd_val) * annual_coef
+            pass_volat = std(daily_pct, axis = 0, ddof = 1) + 1e-6
+            #max_val = maximum.accumulate(daily_val, axis = 0)
+            #mdd_val = (daily_val / max_val - 1).min(axis = 0)
+            rew = nanmedian((daily_val[-1, :] - 1) / pass_volat) * annual_coef
             stat_end_time = time()
             stat_time_lt.append(stat_end_time - stat_st_time)
             values.append(predval)
@@ -1125,11 +1120,11 @@ if __name__ == '__main__':
                     processes = [
                         ctx.Process(
                             target = train,
-                            args = (long_model, long_opt, 1, hold_period, update_cnt, return_dict)
+                            args = (long_model, long_opt, 1, hold_period, update_cnt, stk_cnt, return_dict)
                         ),
                         ctx.Process(
                             target = train,
-                            args = (short_model, short_opt, -1, hold_period, update_cnt, return_dict)
+                            args = (short_model, short_opt, -1, hold_period, update_cnt, stk_cnt, return_dict)
                         )
                     ]
                     #print('Create process list')
@@ -1288,7 +1283,7 @@ if __name__ == '__main__':
         dbx, local_study_fname, dbx_study_fname)
     if download_val != 1:
         study = load(download_val)
-        best_trial_num, trial_cnt = study.best_trial.number, 30
+        best_trial_num, trial_cnt = study.best_trial.number, 45
         trial_best_score = study.best_trial.value
         if download_data(dbx, local_df_fname, dbx_df_fname) != 1:
             trial_obj.stats_df = read_csv(local_df_fname, parse_dates=['time'])
@@ -1315,7 +1310,7 @@ if __name__ == '__main__':
     else:
         study = create_study(direction = "maximize", pruner = MedianPruner())
         best_trial_num, best_params, trial_cnt = NaN, {
-            'name': time_now, 'score': 0}, 25
+            'name': time_now, 'score': 0}, 45
     study.optimize(objective, n_trials = trial_cnt, timeout = None, show_progress_bar = False)
     pruned_trials = study.get_trials(
         deepcopy = False, states = [TrialState.PRUNED])
